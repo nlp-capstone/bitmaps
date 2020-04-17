@@ -92,7 +92,7 @@ with torch.no_grad():
         flat_truth = truth.flatten()
 
         ce = F.cross_entropy(flat_logits, flat_truth.to(device), reduction="none") \
-            .reshape(batch_masked.shape[0], -1)
+              .reshape(batch_masked.shape[0], -1)
 
         total_ce += ce[batch_mask].sum()
 
