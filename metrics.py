@@ -24,10 +24,17 @@ def count_correct(logits, truth, mask):
 
 
 def mean_reciprocal_ranking(logits, truth, mask):
-    args = logits.argsort(dim=-1, descending=True).argsort(dim=-1)
-    ranks = args.gather(dim=-1, index=truth.unsqueeze(-1)) + 1
-    mask_ranks = 1 / ranks[mask].type(logits.dtype)
-    return torch.sum(mask_ranks.sum())
+    top_k_ids = logits.topk(k=32, dim=-1)[1]
+    truth_in_top_k_one_hot = (top_k_ids == truth.unsqueeze(dim=-1)).type(torch.int8)
+    truth_in_top_k = truth_in_top_k_one_hot.sum(dim=-1)
+    truth_in_top_k_idx = truth_in_top_k_one_hot.argmax(dim=-1).type(logits.dtype) + 1
+    truth_in_top_k_idx[~truth_in_top_k.type(torch.bool)] = float("inf")
+    return (1 / truth_in_top_k_idx[mask]).sum()
+
+    # args = logits.argsort(dim=-1, descending=True).argsort(dim=-1)
+    # ranks = args.gather(dim=-1, index=truth.unsqueeze(-1)) + 1
+    # mask_ranks = 1 / ranks[mask].type(logits.dtype)
+    # return mask_ranks.sum()
 
 
 def mlm_cross_entropy(logits, truth, mask):
@@ -36,5 +43,7 @@ def mlm_cross_entropy(logits, truth, mask):
 
     ce = F.cross_entropy(flat_logits, flat_truth, reduction="none") \
         .reshape(mask.shape[0], -1)
+
+    # probs = flat_logits.softmax(dim=-1).gather(dim=-1, index=flat_truth.view(-1, 1))[mask.flatten()]
 
     return ce[mask].sum()
