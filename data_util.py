@@ -77,6 +77,8 @@ def clean_sentence(s: str, unk_token):
 
 # token_seqs and padding mask shape: (batch, max_seq_len)
 def bert_mask_tokens(token_seqs, padding_mask, bert_mask_id, vocab_size, device):
+    torch.manual_seed(481)
+
     # Create mask to avoid padding
     seq_lens = padding_mask.sum(dim=1).unsqueeze(dim=-1)
     ignore_mask = padding_mask.clone()

@@ -7,7 +7,7 @@ from tqdm import tqdm
 from metrics import *
 from data_util import *
 
-from transformers import BertTokenizer, BertModel
+from transformers import BertTokenizer
 import torch
 
 from BERT.bert_mlm import BertForMaskedLM
@@ -23,14 +23,18 @@ model = BertForMaskedLM.from_pretrained("bert-base-uncased")
 with torch.no_grad():
     for name, param in model.named_parameters():
         if name.startswith("bert.embeddings") or name.startswith("cls"):
+            print(f"Ignoring {name}")
             continue
-
+        if ("intermediate" in name or "output" in name) and ("attention" not in name):
+            print(f"Ignoring {name}")
+            continue
+        print(name)
         #  o(x) = [ 1, if x > 0
         #         [ 0, otherwise
-        # mask = param.data > 0.0
-        # param.data[mask] = 1.0
-        # param.data[~mask] = 0.0
-        #  o(x) = [ 1, if x >= 0
+        mask = param.data > 0.0
+        param.data[mask] = 1.0
+        param.data[~mask] = 0.0
+        #  o(x) = [ 1, if x > 0
         #         [ -1, otherwise
         # mask = param.data > 0.0
         # param.data[mask] = 1.0
@@ -98,6 +102,8 @@ with torch.no_grad():
 
         total_time += start_event.elapsed_time(end_event)
 
+        print(logits.argmax(dim=-1)[batch_mask])
+
         # For accuracy
         correct += count_correct(logits, truth, batch_mask).item()
 
@@ -109,10 +115,11 @@ with torch.no_grad():
 
 
 total_masked = masked_tokens_mask.sum().item()
-print(f"Time  : {total_time / len(masked_tokens)}ms")
-print("CE    : ", total_ce / total_masked)
-print("Acc   : ", correct / total_masked)
-print("MRR32 : ", total_ranks / total_masked)
-print(f"Mem   : {memory_usage(model) // (2 ** 20)}MB")
+print(f"Time       : {total_time / len(masked_tokens)}ms")
+print("CE         : ", total_ce / total_masked)
+print("Perplexity :", 2 ** (total_ce / total_masked))
+print("Acc        : ", correct / total_masked)
+print("MRR32      : ", total_ranks / total_masked)
+print(f"Mem        : {memory_usage(model) // (2 ** 20)}MB")
 
 
