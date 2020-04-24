@@ -6,8 +6,8 @@ Previously, binarization techniques, which involve reducing the precision of a m
 have worked to great success in running convolutional neural networks on mobile phones. However, there do not currently such methods for transformers.
 We aim to binarize transformers in order to run them efficiently on edge devices. 
 
-# Masked Language Modeling with BERT
-...
+## BERT
+### Masked Language Modeling
 
-# Binarization Strategies
+### Binarization Strategies
 ...
