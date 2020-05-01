@@ -18,7 +18,7 @@ import torch.nn as nn
 
 from transformers import BertPreTrainedModel
 
-from .common import ACT2FN, BertLayerNorm
+from ..shared.common import ACT2FN, BertLayerNorm
 from .bert import BertModel
 
 
@@ -92,16 +92,11 @@ class BertForMaskedLM(BertPreTrainedModel):
         masked_lm_labels=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
-        lm_labels=None,
+        teacher_hidden_states=None
     ):
         r"""
         masked_lm_labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`, defaults to :obj:`None`):
             Labels for computing the masked language modeling loss.
-            Indices should be in ``[-100, 0, ..., config.vocab_size]`` (see ``input_ids`` docstring)
-            Tokens with indices set to ``-100`` are ignored (masked), the loss is only computed for the tokens with labels
-            in ``[0, ..., config.vocab_size]``
-        lm_labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`, defaults to :obj:`None`):
-            Labels for computing the left-to-right language modeling loss (next word prediction).
             Indices should be in ``[-100, 0, ..., config.vocab_size]`` (see ``input_ids`` docstring)
             Tokens with indices set to ``-100`` are ignored (masked), the loss is only computed for the tokens with labels
             in ``[0, ..., config.vocab_size]``
@@ -166,14 +161,21 @@ class BertForMaskedLM(BertPreTrainedModel):
         if masked_lm_labels is not None:
             loss_fct = nn.CrossEntropyLoss()  # -100 index = padding token
             masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
-            outputs = (masked_lm_loss,) + outputs
 
-        if lm_labels is not None:
-            # we are doing next-token prediction; shift prediction scores and input ids by one
-            prediction_scores = prediction_scores[:, :-1, :].contiguous()
-            lm_labels = lm_labels[:, 1:].contiguous()
-            loss_fct = nn.CrossEntropyLoss()
-            ltr_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), lm_labels.view(-1))
-            outputs = (ltr_lm_loss,) + outputs
+            transfer_loss = torch.zeros_like(masked_lm_loss, requires_grad=True)
 
-        return outputs  # (masked_lm_loss), (ltr_lm_loss), prediction_scores, (hidden_states), (attentions)
+            if teacher_hidden_states is not None:
+                # Ignore first hidden state, which is just the embedded tokens
+                student_hidden_states = outputs[1][1:]
+                teacher_hidden_states = teacher_hidden_states[1:]
+
+                mask = attention_mask.bool().unsqueeze(dim=-1).expand_as(student_hidden_states[0])
+                transfer_weights = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+                mean_factor = 1. / mask.sum().float()
+                for i in range(len(student_hidden_states)):
+                    e = torch.norm((student_hidden_states[i][mask] - teacher_hidden_states[i][mask]), p=2) ** 2
+                    transfer_loss = transfer_loss + transfer_weights[i] * mean_factor * e
+
+            outputs = (masked_lm_loss + transfer_loss,) + outputs
+
+        return outputs  # (masked_lm_loss), prediction_scores, (hidden_states), (attentions)

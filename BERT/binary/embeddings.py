@@ -16,7 +16,7 @@
 import torch
 import torch.nn as nn
 
-from .common import BertLayerNorm
+from ..shared.common import BertLayerNorm
 
 
 class BertEmbeddings(nn.Module):

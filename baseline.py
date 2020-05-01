@@ -1,5 +1,3 @@
-import torch
-import torch.nn.functional as F
 import torchtext
 from torchtext import data
 from tqdm import tqdm
@@ -10,15 +8,14 @@ from data_util import *
 from transformers import BertTokenizer
 import torch
 
-from BERT.bert_mlm import BertForMaskedLM
-
+from BERT.original import OriginalBert
 
 torch.set_printoptions(sci_mode=False)
 
 device = torch.device("cuda")
 
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-model = BertForMaskedLM.from_pretrained("bert-base-uncased")
+model = OriginalBert.from_pretrained("bert-base-uncased")
 
 with torch.no_grad():
     for name, param in model.named_parameters():
@@ -29,16 +26,21 @@ with torch.no_grad():
             print(f"Ignoring {name}")
             continue
         print(name)
-        #  o(x) = [ 1, if x > 0
-        #         [ 0, otherwise
-        mask = param.data > 0.0
-        param.data[mask] = 1.0
-        param.data[~mask] = 0.0
-        #  o(x) = [ 1, if x > 0
-        #         [ -1, otherwise
+        # #  o(x) = [ 1, if x > 0
+        # #         [ 0, otherwise
         # mask = param.data > 0.0
         # param.data[mask] = 1.0
-        # param.data[~mask] = -1.0
+        # param.data[~mask] = 0.0
+        #  o(x) = [ 1, if x > 0
+        #         [ -1, otherwise
+        # mask = param.data >= 0.0
+        # param.data[mask] = 1
+        # param.data[~mask] = -1
+
+        alpha = torch.sum(torch.abs(param.data)) / param.data.nelement()
+        mask = param.data >= 0.0
+        param.data[mask] = alpha
+        param.data[~mask] = -alpha
 
 data_field = data.Field(lower=True, tokenize=lambda s: [s])
 train_ptb, val_ptb, test_ptb = torchtext.datasets.PennTreebank.splits(data_field)
@@ -58,12 +60,12 @@ padding_mask = encoded_tokens["attention_mask"].to(device)
 masked_tokens, masked_tokens_mask =\
     bert_mask_tokens(token_seqs, padding_mask, tokenizer.mask_token_id, len(tokenizer.vocab), device)
 
-
 model = model.to(device)
 model.eval()
 
 masked_tokens = masked_tokens.to(device)
 masked_tokens_mask = masked_tokens_mask.to(device)
+
 
 total_ce = 0
 total_ranks = 0
@@ -101,8 +103,6 @@ with torch.no_grad():
         torch.cuda.synchronize()
 
         total_time += start_event.elapsed_time(end_event)
-
-        print(logits.argmax(dim=-1)[batch_mask])
 
         # For accuracy
         correct += count_correct(logits, truth, batch_mask).item()
