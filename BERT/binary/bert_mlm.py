@@ -70,13 +70,15 @@ class BertOnlyMLMHead(nn.Module):
 
 
 class BertForMaskedLM(BertPreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config, transfer_lambda=None):
         super().__init__(config)
 
         self.bert = BertModel(config)
         self.cls = BertOnlyMLMHead(config)
 
         self.init_weights()
+
+        self.transfer_lambda = transfer_lambda
 
     def get_output_embeddings(self):
         return self.cls.predictions.decoder
@@ -164,17 +166,16 @@ class BertForMaskedLM(BertPreTrainedModel):
 
             transfer_loss = torch.zeros_like(masked_lm_loss, requires_grad=True)
 
-            if teacher_hidden_states is not None:
+            if teacher_hidden_states is not None and self.transfer_lambda is not None:
                 # Ignore first hidden state, which is just the embedded tokens
                 student_hidden_states = outputs[1][1:]
                 teacher_hidden_states = teacher_hidden_states[1:]
 
                 mask = attention_mask.bool().unsqueeze(dim=-1).expand_as(student_hidden_states[0])
-                transfer_weights = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
                 mean_factor = 1. / mask.sum().float()
                 for i in range(len(student_hidden_states)):
                     e = torch.norm((student_hidden_states[i][mask] - teacher_hidden_states[i][mask]), p=2) ** 2
-                    transfer_loss = transfer_loss + transfer_weights[i] * mean_factor * e
+                    transfer_loss = transfer_loss + self.transfer_lambda[i] * mean_factor * e
 
             outputs = (masked_lm_loss + transfer_loss,) + outputs
 

@@ -1,84 +1,128 @@
+import os
+import glob
+from multiprocessing import Pool
+from functools import partial
+
 import torch
+from torch.utils.data import Dataset
+
+from transformers import PreTrainedTokenizer
 
 
-# https://github.com/allenai/allennlp/blob/master/allennlp/common/util.py, not published yet
-def sanitize_ptb_tokenized_string(text: str) -> str:
-    """
-    Sanitizes string that was tokenized using PTBTokenizer
-    """
-    tokens = text.split(" ")
-    if len(tokens) == 0:
-        return text
+class ShardedBertPretrainingDataset(Dataset):
+    def __init__(self, dir, tokenizer: PreTrainedTokenizer, max_seq_len, num_processes=4, subset_size=None,
+                 random_seed=None):
+        self.tokenizer = tokenizer
+        cache_dir = os.path.join(dir, f"cache_{max_seq_len}")
+        if not os.path.isdir(cache_dir):
+            os.mkdir(cache_dir)
 
-    # Replace quotation marks and parentheses
-    token_map = {
-        "``": '"',
-        "''": '"',
-        "-lrb-": "(",
-        "-rrb-": ")",
-        "-lsb-": "[",
-        "-rsb-": "]",
-        "-lcb-": "{",
-        "-rcb-": "}",
-        "<s>": "",
-        "</s>": "",
-    }
+        if random_seed is not None:
+            torch.random.manual_seed(random_seed)
 
-    # Merge punctuation with previous tokens
-    punct_forward = {"`", "$", "#"}
-    punct_backward = {".", ",", "!", "?", ":", ";", "%", "'"}
+        if subset_size is not None:
+            data_path = os.path.join(cache_dir, f"data_{subset_size}.pt")
+            if os.path.isfile(data_path):
+                data = torch.load(data_path)
+                assert data.shape[0] == subset_size and data.shape[1] == max_seq_len
+                self.data = data
+                return
 
-    # Exact matches that get merged forward or backward
-    em_forward = {"(", "[", "{"}
-    em_backward = {"n't", "na", ")", "]", "}"}
+        # CLS/SEP tokens
+        effective_max_seq_len = max_seq_len - len(tokenizer.build_inputs_with_special_tokens([]))
 
-    new_tokens = []
+        sequences = []
 
-    merge_fwd = False
-    for i, orig_token in enumerate(tokens):
-        tokens[i] = token_map[orig_token.lower()] if orig_token.lower() in token_map else orig_token
-        new_token = tokens[i].lower()
+        shard_paths = sorted(glob.glob(os.path.join(dir, "*.txt")), key=self.extract_shard_index)
 
-        # merge_fwd was set by previous token, so it should be prepended to current token
-        if merge_fwd:
-            tokens[i] = tokens[i - 1] + tokens[i]
+        # func = partial(self.process_shard, tokenizer, effective_max_seq_len, max_seq_len, cache_dir)
+        # with Pool(processes=8) as pool:
+        #     for t in pool.imap(func, shard_paths):
+        #         sequences.append(t)
+        for shard_path in shard_paths:
+            sequences.append(self.process_shard(tokenizer, effective_max_seq_len, max_seq_len, cache_dir,
+                                                shard_path))
 
-        if len(tokens[i]) == 0:
-            continue
+        print("Concatenating shards")
+        self.data = torch.cat(sequences, dim=0)
+        print("Done concatenating shards")
 
-        # Special cases for `` and '', those tells us if " is the start or end of a quotation.
-        # Also always merge tokens starting with ' backward and don't merge back if we just merged forward
-        merge_bckwd = not merge_fwd and (
-            orig_token == "''"
-            or new_token in em_backward
-            or new_token.startswith("'")
-            or all(c in punct_backward for c in new_token)
-        )
-        merge_fwd = (
-            orig_token == "``"
-            or new_token in em_forward
-            or all(c in punct_forward for c in new_token)
-        )
+        if subset_size is not None:
+            subset_indices = torch.randperm(len(self.data))[:subset_size].clone()
+            self.data = self.data[subset_indices].clone()
 
-        if merge_bckwd and new_tokens:
-            new_tokens[-1] += tokens[i]
-        elif not new_tokens or not merge_fwd or i == len(tokens) - 1:
-            new_tokens.append(tokens[i])
+            torch.save(subset_indices, os.path.join(cache_dir, f"subset_indices_{subset_size}.pt"))
+            torch.save(self.data, os.path.join(cache_dir, f"data_{subset_size}.pt"))
 
-    return " ".join(new_tokens)
+    def __len__(self):
+        return len(self.data)
 
+    def __getitem__(self, idx):
+        sequence = self.data[idx].unsqueeze(0)
+        padding_mask = sequence != self.tokenizer.pad_token_id
+        masked_token_seq, masked_tokens_mask = bert_mask_tokens(sequence, padding_mask,
+                                                                self.tokenizer.mask_token_id,
+                                                                self.tokenizer.vocab_size)
 
-def clean_sentence(s: str, unk_token):
-    if not s or s == "<eos>":
-        return None
-    s = s.strip().replace("<unk>", unk_token)
-    return sanitize_ptb_tokenized_string(s)
+        return (masked_token_seq.squeeze(0), masked_tokens_mask.squeeze(0), sequence.squeeze(0),
+                padding_mask.squeeze(0))
+
+    @staticmethod
+    def extract_shard_index(shard_path):
+        return int(os.path.splitext(shard_path)[0].split("_")[-1])
+
+    @staticmethod
+    def process_shard(tokenizer, effective_max_seq_len, max_seq_len, cache_dir, shard_path):
+        print("Processing shard #", ShardedBertPretrainingDataset.extract_shard_index(shard_path))
+
+        # Try loading tensor for shard from disk if exists
+        shard_cache_path = os.path.join(cache_dir, os.path.splitext(os.path.basename(shard_path))[0] + ".pt")
+        if os.path.isfile(shard_cache_path):
+            print("Using cached shard from ", shard_cache_path)
+            try:
+                seq_tensor = torch.load(shard_cache_path)
+                assert seq_tensor.shape[1] == max_seq_len
+                return seq_tensor
+            except:
+                os.remove(shard_cache_path)
+
+        sequence_tensors = []
+        current_sequence = []
+        with open(shard_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip().lower()
+                # Skip empty lines
+                if not line:
+                    continue
+                tokens = tokenizer.tokenize(line)
+
+                # We can't encode those
+                if len(tokens) > effective_max_seq_len:
+                    tokens = []
+
+                # If the current line doesn't fit into the current sequence, finalize sequence
+                # by encoding as ids
+                if len(tokens) + len(current_sequence) > effective_max_seq_len:
+                    seq_tensor = tokenizer.encode(current_sequence, add_special_tokens=True,
+                                                  max_length=max_seq_len, return_tensors="pt",
+                                                  pad_to_max_length=True)
+                    sequence_tensors.append(seq_tensor)
+                    current_sequence.clear()
+                current_sequence += tokens
+
+        # Concatenate along batch dimension
+        seq_tensor = torch.cat(sequence_tensors, dim=0)
+
+        # Cache tensor
+        try:
+            torch.save(seq_tensor, shard_cache_path)
+        except:
+            pass
+        return seq_tensor
 
 
 # token_seqs and padding mask shape: (batch, max_seq_len)
-def bert_mask_tokens(token_seqs, padding_mask, bert_mask_id, vocab_size, device):
-    torch.manual_seed(481)
-
+def bert_mask_tokens(token_seqs, padding_mask, bert_mask_id, vocab_size):
     # Create mask to avoid padding
     seq_lens = padding_mask.sum(dim=1).unsqueeze(dim=-1)
     ignore_mask = padding_mask.clone()
@@ -88,11 +132,11 @@ def bert_mask_tokens(token_seqs, padding_mask, bert_mask_id, vocab_size, device)
     ignore_mask.scatter_(dim=1, index=seq_lens - 1, src=torch.zeros_like(seq_lens).type(ignore_mask.dtype))
 
     # Those 15% of tokens should be predicted
-    masked_tokens_mask = (torch.rand(token_seqs.shape, device=device) < 0.15) & ignore_mask.type(torch.bool)
+    masked_tokens_mask = (torch.rand(token_seqs.shape) < 0.15) & ignore_mask.type(torch.bool)
 
     # We use this random draw to determine if a token should be masked (0.8), get randomly replaced (0.1) or
     # unchanged (0.1)
-    p_mask_token = torch.rand(token_seqs.shape, device=device)
+    p_mask_token = torch.rand(token_seqs.shape)
 
     masked_token_seqs = token_seqs.clone()
 
