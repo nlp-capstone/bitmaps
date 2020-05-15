@@ -15,6 +15,7 @@
 # limitations under the License.
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from transformers import BertPreTrainedModel
 
@@ -89,11 +90,8 @@ class BertForMaskedLM(BertPreTrainedModel):
         attention_mask=None,
         token_type_ids=None,
         position_ids=None,
-        head_mask=None,
         inputs_embeds=None,
         masked_lm_labels=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
         teacher_hidden_states=None
     ):
         r"""
@@ -143,10 +141,7 @@ class BertForMaskedLM(BertPreTrainedModel):
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            encoder_hidden_states=encoder_hidden_states,
-            encoder_attention_mask=encoder_attention_mask,
+            inputs_embeds=inputs_embeds
         )
 
         sequence_output = outputs[0]
@@ -171,12 +166,19 @@ class BertForMaskedLM(BertPreTrainedModel):
                 student_hidden_states = outputs[1][1:]
                 teacher_hidden_states = teacher_hidden_states[1:]
 
-                mask = attention_mask.bool().unsqueeze(dim=-1).expand_as(student_hidden_states[0])
-                mean_factor = 1. / mask.sum().float()
+                masked_tokens_mask = (masked_lm_labels != -100).bool()
+                mask = masked_tokens_mask.bool().unsqueeze(dim=-1).expand_as(student_hidden_states[0])
+                cs_losses = []
                 for i in range(len(student_hidden_states)):
-                    e = torch.norm((student_hidden_states[i][mask] - teacher_hidden_states[i][mask]), p=2) ** 2
-                    transfer_loss = transfer_loss + self.transfer_lambda[i] * mean_factor * e
+                    H_s = student_hidden_states[i][mask].view(-1, student_hidden_states[i].shape[-1])
+                    H_t = teacher_hidden_states[i][mask].view(-1, teacher_hidden_states[i].shape[-1])
+                    cs = F.cosine_similarity(H_s, H_t, dim=-1)
+                    cs_loss = ((1. - cs) / 2.).mean()
+                    cs_losses.append(cs_loss.item())
+                    # mse = (torch.norm((H_s - H_t), dim=-1, p=2) ** 2).mean()
+                    # print(f"Layer {i+1} - Dissimilarity: {cs_loss} MSE: {mse}")
+                    transfer_loss = transfer_loss + cs_loss
 
-            outputs = (masked_lm_loss + transfer_loss,) + outputs
+            outputs = (masked_lm_loss, transfer_loss) + outputs
 
         return outputs  # (masked_lm_loss), prediction_scores, (hidden_states), (attentions)

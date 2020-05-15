@@ -19,6 +19,20 @@ def memory_usage(model: nn.Module):
     return total_size_bytes
 
 
+def memory_usage_module_wise(model: nn.Module):
+    total_size_bytes = 0
+    for name, param in model.named_parameters():
+            param_size_bytes = param.data.element_size() * param.data.nelement()
+
+            if "cls" in name or "embeddings" in name or "LayerNorm" in name or "alpha" in name or "gamma" in name:
+                total_size_bytes += param_size_bytes
+                continue
+
+            param_size_bytes //= (param.data.element_size() * 8)
+            total_size_bytes += param_size_bytes
+    return total_size_bytes
+
+
 def count_correct(logits, truth, mask):
     return (logits.argmax(dim=-1) == truth)[mask].sum()
 

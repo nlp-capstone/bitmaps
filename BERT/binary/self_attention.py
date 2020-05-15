@@ -19,7 +19,7 @@ import math
 
 from ..shared.common import BertLayerNorm
 
-from .linear import BinaryLinear
+from .linear import BinaryLinear, MultiScaleBinaryLinear
 
 
 class BertSelfAttention(nn.Module):
@@ -36,9 +36,9 @@ class BertSelfAttention(nn.Module):
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        self.query = BinaryLinear(config.hidden_size, self.all_head_size)
-        self.key = BinaryLinear(config.hidden_size, self.all_head_size)
-        self.value = BinaryLinear(config.hidden_size, self.all_head_size)
+        self.query = MultiScaleBinaryLinear(config.hidden_size, self.num_attention_heads, self.attention_head_size)
+        self.key = MultiScaleBinaryLinear(config.hidden_size, self.num_attention_heads, self.attention_head_size)
+        self.value = MultiScaleBinaryLinear(config.hidden_size, self.num_attention_heads, self.attention_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
@@ -50,23 +50,11 @@ class BertSelfAttention(nn.Module):
     def forward(
         self,
         hidden_states,
-        attention_mask=None,
-        head_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
+        attention_mask=None
     ):
         mixed_query_layer = self.query(hidden_states)
-
-        # If this is instantiated as a cross-attention module, the keys
-        # and values come from an encoder; the attention mask needs to be
-        # such that the encoder's padding tokens are not attended to.
-        if encoder_hidden_states is not None:
-            mixed_key_layer = self.key(encoder_hidden_states)
-            mixed_value_layer = self.value(encoder_hidden_states)
-            attention_mask = encoder_attention_mask
-        else:
-            mixed_key_layer = self.key(hidden_states)
-            mixed_value_layer = self.value(hidden_states)
+        mixed_key_layer = self.key(hidden_states)
+        mixed_value_layer = self.value(hidden_states)
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
         key_layer = self.transpose_for_scores(mixed_key_layer)
@@ -80,15 +68,11 @@ class BertSelfAttention(nn.Module):
             attention_scores = attention_scores + attention_mask
 
         # Normalize the attention scores to probabilities.
-        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        attention_probs_before_dropout = nn.Softmax(dim=-1)(attention_scores)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
-        attention_probs = self.dropout(attention_probs)
-
-        # Mask heads if we want to
-        if head_mask is not None:
-            attention_probs = attention_probs * head_mask
+        attention_probs = self.dropout(attention_probs_before_dropout)
 
         context_layer = torch.matmul(attention_probs, value_layer)
 
@@ -96,7 +80,7 @@ class BertSelfAttention(nn.Module):
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
 
-        outputs = (context_layer, attention_probs) if self.output_attentions else (context_layer,)
+        outputs = (context_layer, attention_probs_before_dropout) if self.output_attentions else (context_layer,)
         return outputs
 
 
@@ -123,13 +107,10 @@ class BertAttention(nn.Module):
     def forward(
         self,
         hidden_states,
-        attention_mask=None,
-        head_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
+        attention_mask=None
     ):
         self_outputs = self.self(
-            hidden_states, attention_mask, head_mask, encoder_hidden_states, encoder_attention_mask
+            hidden_states, attention_mask
         )
         attention_output = self.output(self_outputs[0], hidden_states)
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them

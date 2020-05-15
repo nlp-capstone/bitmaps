@@ -27,10 +27,7 @@ class BertEncoder(nn.Module):
     def forward(
         self,
         hidden_states,
-        attention_mask=None,
-        head_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
+        attention_mask=None
     ):
         all_hidden_states = ()
         all_attentions = ()
@@ -39,7 +36,7 @@ class BertEncoder(nn.Module):
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
             layer_outputs = layer_module(
-                hidden_states, attention_mask, head_mask[i], encoder_hidden_states, encoder_attention_mask
+                hidden_states, attention_mask
             )
             hidden_states = layer_outputs[0]
 
