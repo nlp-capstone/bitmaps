@@ -1,4 +1,6 @@
 from tqdm import tqdm
+import os
+import glob
 
 import torch
 from torch.utils.data import DataLoader
@@ -7,7 +9,7 @@ import torch.optim as optim
 from transformers import BertTokenizer
 
 from metrics import *
-from data_util import *
+from datasets.sharded_bert_pretraining_dataset import ShardedBertPretrainingDataset
 from evaluate import evaluate
 from apex import amp
 
@@ -33,25 +35,21 @@ BASE_LOG_PATH = "..."
 device = torch.device("cuda")
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
-teacher_model = OriginalBert.from_pretrained("bert-base-uncased", output_attentions=True).to(device)
-teacher_model.eval()
-model = BinaryBert.from_pretrained("bert-base-uncased",
-                                   output_attentions=True,
-                                   attention_probs_dropout_prob=0.05,
-                                   hidden_dropout_prob=0.05).to(device)
+# teacher_model = OriginalBert.from_pretrained("bert-base-uncased").to(device).eval()
 
-train_dataset = ShardedBertPretrainingDataset("...", tokenizer,
-                                              128, random_seed=None, subset_size=65536)
+model = BinaryBert.from_pretrained("bert-base-uncased").to(device)
 
-# test_dataset = ShardedBertPretrainingDataset("...", tokenizer,
-#                                              128, random_seed=481, subset_size=8192)
+train_dataset, val_dataset = ShardedBertPretrainingDataset.create("...", tokenizer,
+                                                                  128, [("train", 65536), ("val", 8192)])
+
+test_dataset = ShardedBertPretrainingDataset.create("...", tokenizer,
+                                             128, [("test", 8192)], random_seed=481)
 
 dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=2, pin_memory=True)
 
-
 epochs = 64
-knowledge_transfer = False
-model.transfer_lambda = [0.] * 12
+# knowledge_transfer = False
+# model.transfer_lambda = [0.] * 12
 optimizer = optim.Adam(model.parameters(), lr=5e-4, eps=1e-6)
 lr_decay = LRLinearDecay(8 * 512, 64 * 512)
 lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_decay.get_lr_fn())
@@ -67,35 +65,34 @@ if not os.path.isdir(log_path):
 
 start_epoch = 0
 
-cp = torch.load(os.path.join(log_path, "...pt"))
-model.load_state_dict(cp["model_state_dict"])
-optimizer.load_state_dict(cp["optimizer_state_dict"])
-if "lr_scheduler" in cp:
-    lr_scheduler.load_state_dict(cp["lr_scheduler"])
+cp = torch.load(os.path.join(log_path, "..."))
+model.load_state_dict(cp["model_state_dict"], strict=False)
+# optimizer.load_state_dict(cp["optimizer_state_dict"])
+# if "lr_scheduler" in cp:
+#     lr_scheduler.load_state_dict(cp["lr_scheduler"])
 start_epoch = cp["epoch"]
 print("Starting loss: ", cp["loss"])
 
-# w = 0.00975384097546339, b = 0.1711723357439041
-# model.transfer_lambda = 1 + (torch.arange(12).float() - 11.) * 0.00975384097546339
 
-# Init params
-# for m in model.modules():
-#     if hasattr(m, "init_params"):
-#         m.init_params()
+# # Init params
+for m in model.modules():
+    if hasattr(m, "init_binary_weights"):
+        m.init_binary_weights()
+
+print(evaluate(model, val_dataset, device))
 
 model, optimizer = amp.initialize(model, optimizer, opt_level="O2", max_loss_scale=1024.0)
-model.train()
 
 print(memory_usage_module_wise(model) // (2 ** 20))
 
-# for p in optimizer.param_groups:
-#     p["lr"] = 1e-4
-
 for epoch in range(start_epoch, epochs):
+    print(f"Epoch {epoch + 1}/{epochs}")
+
+    model.train()
+
     epoch_loss = 0.0
     epoch_mlm_loss = 0.0
     epoch_transfer_loss = 0.0
-    print(f"Epoch {epoch + 1}/{epochs}")
     tqdm_dataloader = tqdm(dataloader)
     num_masked_tokens = 0
     mrr = 0
@@ -112,15 +109,15 @@ for epoch in range(start_epoch, epochs):
         mlm_labels = sequences.clone()
         mlm_labels[~masked_tokens_mask] = -100
 
-        teacher_attentions = None
-        if knowledge_transfer:
-            with torch.no_grad():
-                _, teacher_attentions = teacher_model(input_ids=masked_token_seqs, attention_mask=padding_mask)
-                teacher_attentions = [h.float() for h in teacher_attentions]
+        # teacher_attentions = None
+        # if knowledge_transfer:
+        #     with torch.no_grad():
+        #         _, teacher_attentions = teacher_model(input_ids=masked_token_seqs, attention_mask=padding_mask)
+        #         teacher_attentions = [h.float() for h in teacher_attentions]
 
-        mlm_loss, transfer_loss, logits, attentions = model(input_ids=masked_token_seqs,
-                                                            attention_mask=padding_mask,
-                                                            masked_lm_labels=mlm_labels)
+        mlm_loss, transfer_loss, logits = model(input_ids=masked_token_seqs,
+                                                attention_mask=padding_mask,
+                                                masked_lm_labels=mlm_labels)
 
         # seq_lens = padding_mask.sum(dim=-1)
         # attention_loss = 0.
@@ -161,6 +158,10 @@ for epoch in range(start_epoch, epochs):
 
         lr_scheduler.step()
 
+    val_metrics = evaluate(model, val_dataset, device)
+
+    print(val_metrics)
+
     torch.save({
         "epoch": epoch + 1,
         "model_state_dict": model.state_dict(),
@@ -169,6 +170,11 @@ for epoch in range(start_epoch, epochs):
         "loss": epoch_loss / num_masked_tokens,
         "transfer_loss": epoch_transfer_loss / num_masked_tokens,
         "mrr": mrr / num_masked_tokens,
-        "acc": correct / num_masked_tokens},
-        os.path.join(log_path, f"cp_epoch_{epoch + 1}_loss_{epoch_loss / num_masked_tokens:.4f}.pt"))
+        "acc": correct / num_masked_tokens,
+        # Val metrics
+        "val_loss": val_metrics["Loss"],
+        "val_mrr": val_metrics["MRR32"],
+        "val_acc": val_metrics["Accuracy"]
+        },
+        os.path.join(log_path, f"cp_epoch_{epoch + 1}_loss_{epoch_loss / num_masked_tokens:.4f}_val_loss_{val_metrics['Loss']:.4f}.pt"))
 

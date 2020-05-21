@@ -5,15 +5,11 @@ from torch.utils.data import DataLoader
 from transformers import BertTokenizer
 
 from metrics import *
-from data_util import ShardedBertPretrainingDataset
-
-import copy
 
 
 def evaluate(model, dataset, device):
     # Need to copy model because we convert to half precision (not anymore for now)
-    model = copy.deepcopy(model)
-    model = model.to(device).half()
+    model.eval()
 
     dataloader = DataLoader(dataset, batch_size=128, shuffle=False, num_workers=0, pin_memory=True)
 
@@ -64,7 +60,7 @@ def evaluate(model, dataset, device):
         "Perplexity": 2 ** (total_ce / total_masked),
         "Accuracy": correct / total_masked,
         "MRR32": total_ranks / total_masked,
-        "Memory(MB)": memory_usage(model) // (2 ** 20)
+        "Memory(MB)": memory_usage_module_wise(model) // (2 ** 20)
     }
 #
 # from BERT.original import OriginalBert

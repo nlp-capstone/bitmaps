@@ -161,23 +161,23 @@ class BertForMaskedLM(BertPreTrainedModel):
 
             transfer_loss = torch.zeros_like(masked_lm_loss, requires_grad=True)
 
-            if teacher_hidden_states is not None and self.transfer_lambda is not None:
-                # Ignore first hidden state, which is just the embedded tokens
-                student_hidden_states = outputs[1][1:]
-                teacher_hidden_states = teacher_hidden_states[1:]
-
-                masked_tokens_mask = (masked_lm_labels != -100).bool()
-                mask = masked_tokens_mask.bool().unsqueeze(dim=-1).expand_as(student_hidden_states[0])
-                cs_losses = []
-                for i in range(len(student_hidden_states)):
-                    H_s = student_hidden_states[i][mask].view(-1, student_hidden_states[i].shape[-1])
-                    H_t = teacher_hidden_states[i][mask].view(-1, teacher_hidden_states[i].shape[-1])
-                    cs = F.cosine_similarity(H_s, H_t, dim=-1)
-                    cs_loss = ((1. - cs) / 2.).mean()
-                    cs_losses.append(cs_loss.item())
-                    # mse = (torch.norm((H_s - H_t), dim=-1, p=2) ** 2).mean()
-                    # print(f"Layer {i+1} - Dissimilarity: {cs_loss} MSE: {mse}")
-                    transfer_loss = transfer_loss + cs_loss
+            # if teacher_hidden_states is not None and self.transfer_lambda is not None:
+            #     # Ignore first hidden state, which is just the embedded tokens
+            #     student_hidden_states = outputs[1][1:]
+            #     teacher_hidden_states = teacher_hidden_states[1:]
+            #
+            #     masked_tokens_mask = (masked_lm_labels != -100).bool()
+            #     mask = masked_tokens_mask.bool().unsqueeze(dim=-1).expand_as(student_hidden_states[0])
+            #     cs_losses = []
+            #     for i in range(len(student_hidden_states)):
+            #         H_s = student_hidden_states[i][mask].view(-1, student_hidden_states[i].shape[-1])
+            #         H_t = teacher_hidden_states[i][mask].view(-1, teacher_hidden_states[i].shape[-1])
+            #         cs = F.cosine_similarity(H_s, H_t, dim=-1)
+            #         cs_loss = ((1. - cs) / 2.).mean()
+            #         cs_losses.append(cs_loss.item())
+            #         # mse = (torch.norm((H_s - H_t), dim=-1, p=2) ** 2).mean()
+            #         # print(f"Layer {i+1} - Dissimilarity: {cs_loss} MSE: {mse}")
+            #         transfer_loss = transfer_loss + cs_loss
 
             outputs = (masked_lm_loss, transfer_loss) + outputs
 

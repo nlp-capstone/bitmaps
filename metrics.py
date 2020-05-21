@@ -24,7 +24,7 @@ def memory_usage_module_wise(model: nn.Module):
     for name, param in model.named_parameters():
             param_size_bytes = param.data.element_size() * param.data.nelement()
 
-            if "cls" in name or "embeddings" in name or "LayerNorm" in name or "alpha" in name or "gamma" in name:
+            if "cls" in name or "LayerNorm" in name or "alpha" in name or "gamma" in name or "beta" in name:
                 total_size_bytes += param_size_bytes
                 continue
 
