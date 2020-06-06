@@ -9,7 +9,7 @@ from metrics import *
 
 def evaluate(model, dataset, device):
     # Need to copy model because we convert to half precision (not anymore for now)
-    model.eval()
+    model.eval().half()
 
     dataloader = DataLoader(dataset, batch_size=128, shuffle=False, num_workers=0, pin_memory=True)
 
@@ -23,6 +23,7 @@ def evaluate(model, dataset, device):
     total_masked = 0
     correct = 0
 
+    dataset.pre_eval()
     with torch.no_grad():
         for batch in tqdm(dataloader):
             # Transfer all tensors to GPU and unpack
@@ -47,7 +48,7 @@ def evaluate(model, dataset, device):
             correct += count_correct(logits, sequences, masked_tokens_mask).item()
 
             # Calculate Cross entropy and scale it back up
-            total_ce += (mlm_loss + transfer_loss).item() * num_masked
+            total_ce += (mlm_loss + 0).item() * num_masked
 
             # Calculate MRR
             total_ranks += mean_reciprocal_ranking(logits, sequences, masked_tokens_mask).item()
@@ -62,8 +63,4 @@ def evaluate(model, dataset, device):
         "MRR32": total_ranks / total_masked,
         "Memory(MB)": memory_usage_module_wise(model) // (2 ** 20)
     }
-#
-# from BERT.original import OriginalBert
-# device = torch.device("cuda:0")
-# model = OriginalBert.from_pretrained("bert-base-uncased")
-# print(evaluate(model, device))
+

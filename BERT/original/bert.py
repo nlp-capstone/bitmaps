@@ -18,6 +18,7 @@ from transformers import BertPreTrainedModel
 
 from .embeddings import BertEmbeddings
 from .encoder import BertEncoder
+from .pooler import BertPooler
 
 
 class BertModel(BertPreTrainedModel):
@@ -27,6 +28,7 @@ class BertModel(BertPreTrainedModel):
 
         self.embeddings = BertEmbeddings(config)
         self.encoder = BertEncoder(config)
+        self.pooler = BertPooler(config)
 
         self.init_weights()
 
@@ -167,7 +169,7 @@ class BertModel(BertPreTrainedModel):
             encoder_attention_mask=encoder_extended_attention_mask,
         )
         sequence_output = encoder_outputs[0]
-        pooled_output = None  # self.pooler(sequence_output)
+        pooled_output = self.pooler(sequence_output)
 
         outputs = (sequence_output, pooled_output,) + encoder_outputs[
             1:

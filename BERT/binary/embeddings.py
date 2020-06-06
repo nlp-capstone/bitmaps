@@ -17,8 +17,7 @@ import torch
 import torch.nn as nn
 
 from ..shared.common import BertLayerNorm
-from ..binary.linear import BinaryEmbeddingSingle
-
+from .linear import BinaryEmbeddingH, BinaryEmbeddingW, BinaryEmbeddingSingle
 
 class BertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings.
@@ -26,9 +25,9 @@ class BertEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0)
+        self.word_embeddings = BinaryEmbeddingH(config.vocab_size, config.hidden_size, padding_idx=0)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+        self.token_type_embeddings = BinaryEmbeddingH(config.type_vocab_size, config.hidden_size)
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
@@ -46,8 +45,6 @@ class BertEmbeddings(nn.Module):
         if position_ids is None:
             position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
             position_ids = position_ids.unsqueeze(0).expand(input_shape)
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
 
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)

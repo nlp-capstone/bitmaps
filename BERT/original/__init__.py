@@ -1,1 +1,2 @@
 from .bert_mlm import BertForMaskedLM as OriginalBert
+from .bert_binary_classification import BertForBinaryClassification

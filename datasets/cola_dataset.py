@@ -9,8 +9,6 @@ class CoLADataset(Dataset):
     def __init__(self, path, tokenizer: PreTrainedTokenizer):
         super().__init__()
 
-        self.tokenizer = tokenizer
-
         self.sentences = []
         self.labels = []
 
@@ -23,11 +21,8 @@ class CoLADataset(Dataset):
                 self.sentences.append(seq)
                 self.labels.append(torch.tensor([int(label)]))
 
-        # sentences_with_idx = list(enumerate(sentences))
-        # sorted_by_length = sorted(sentences_with_idx, key=lambda s: len(s[1]))
-
-    def __getitem__(self, idx):
-        return self.sentences[idx], self.labels[idx].unsqueeze(0)
+    def __getitem__(self, index):
+        return self.sentences[index], self.labels[index].unsqueeze(0)
 
     def __len__(self):
         return len(self.sentences)

@@ -41,8 +41,8 @@ class BertModel(BertPreTrainedModel):
     def forward(
         self,
         input_ids=None,
-        attention_mask=None,
         token_type_ids=None,
+        attention_mask=None,
         position_ids=None,
         inputs_embeds=None
     ):
@@ -127,7 +127,7 @@ class BertModel(BertPreTrainedModel):
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
 
         embedding_output = self.embeddings(
-            input_ids=input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
+            input_ids=input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds,
         )
         encoder_outputs = self.encoder(
             embedding_output,

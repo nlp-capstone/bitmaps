@@ -2,7 +2,6 @@ from tqdm import tqdm
 import os
 import glob
 
-import torch
 from torch.utils.data import DataLoader
 import torch.optim as optim
 
@@ -14,48 +13,53 @@ from evaluate import evaluate
 from apex import amp
 
 from BERT.binary import BinaryBert
-from BERT.original import OriginalBert
 from lr_linear_decay import LRLinearDecay
 
 torch.set_printoptions(sci_mode=False)
+import matplotlib.pyplot as plt
+import numpy as np
 
-
-def print_log_stats(log_path, last_n=0):
+def print_log_stats(title, log_path, last_n=0):
     print("Experiment: ", os.path.basename(log_path))
     state_files = glob.glob(os.path.join(log_path, "*.pt"))
     state_files.sort(key=lambda path: int(os.path.basename(path).split("_")[2]))
+    train_losses = []
+    val_losses = []
     for state_file in state_files[-last_n:]:
         state_dict = torch.load(state_file, map_location="cpu")
         print(f"| Epoch {state_dict['epoch']:02d} | Loss - {state_dict['loss']:.4f} | MRR - {state_dict['mrr']:.4f} | Acc - {state_dict['acc']:.4f} |")
-    print()
-
+        train_losses.append(state_dict["loss"])
+        val_losses.append(state_dict["val_loss"])
+    epochs = np.arange(1, len(train_losses) + 1)
+    plt.plot(epochs, train_losses, label="Training loss")
+    plt.plot(epochs, val_losses, label="Validation loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Cross Entropy Loss")
+    plt.title(title)
+    plt.legend()
+    plt.show()
 
 BASE_LOG_PATH = "..."
 
 device = torch.device("cuda")
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
-# teacher_model = OriginalBert.from_pretrained("bert-base-uncased").to(device).eval()
-
 model = BinaryBert.from_pretrained("bert-base-uncased").to(device)
 
 train_dataset, val_dataset = ShardedBertPretrainingDataset.create("...", tokenizer,
-                                                                  128, [("train", 65536), ("val", 8192)])
+                                                                  128, [("train", 65536, None), ("val", 8192, 481)])
 
-test_dataset = ShardedBertPretrainingDataset.create("...", tokenizer,
-                                             128, [("test", 8192)], random_seed=481)
+# test_dataset = ShardedBertPretrainingDataset.create("...", tokenizer,
+#                                              128, [("test", 8192, 481 * 481)],)
 
 dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=2, pin_memory=True)
 
 epochs = 64
-# knowledge_transfer = False
-# model.transfer_lambda = [0.] * 12
 optimizer = optim.Adam(model.parameters(), lr=5e-4, eps=1e-6)
 lr_decay = LRLinearDecay(8 * 512, 64 * 512)
 lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_decay.get_lr_fn())
 
-EXPERIMENT_NAME = "..."
-
+EXPERIMENT_NAME = "alpha_NO_gamma_binary_embeddings_VOCAB_NEW_lr_5e-4_grad_norm"
 log_path = os.path.join(BASE_LOG_PATH, EXPERIMENT_NAME)
 
 # print_log_stats(log_path, 0)
@@ -65,25 +69,34 @@ if not os.path.isdir(log_path):
 
 start_epoch = 0
 
-cp = torch.load(os.path.join(log_path, "..."))
-model.load_state_dict(cp["model_state_dict"], strict=False)
-# optimizer.load_state_dict(cp["optimizer_state_dict"])
+# # VAL DATA FIX
+# state_files = glob.glob(os.path.join(log_path, "*.pt"))
+# state_files.sort(key=lambda path: int(os.path.basename(path).split("_")[2]))
+
+# for state_file in state_files:
+#     state_dict = torch.load(state_file)
+#     model.load_state_dict(state_dict["model_state_dict"], strict=False)
+#     print("Epoch:", state_dict["epoch"])
+#     print(evaluate(model, val_dataset, device))
+#
+# quit()
+
+# cp = torch.load(os.path.join(log_path, "cp_epoch_63_loss_2.6369_val_loss_2.9853.pt"))
+# model.load_state_dict(cp["model_state_dict"], strict=True)
+# #optimizer.load_state_dict(cp["optimizer_state_dict"])
 # if "lr_scheduler" in cp:
 #     lr_scheduler.load_state_dict(cp["lr_scheduler"])
-start_epoch = cp["epoch"]
-print("Starting loss: ", cp["loss"])
+# start_epoch = cp["epoch"]
+# print("Starting loss: ", cp["loss"])
 
-
-# # Init params
+# Init params
 for m in model.modules():
     if hasattr(m, "init_binary_weights"):
         m.init_binary_weights()
 
-print(evaluate(model, val_dataset, device))
-
 model, optimizer = amp.initialize(model, optimizer, opt_level="O2", max_loss_scale=1024.0)
 
-print(memory_usage_module_wise(model) // (2 ** 20))
+print(memory_usage_module_wise(model) / (2 ** 20))
 
 for epoch in range(start_epoch, epochs):
     print(f"Epoch {epoch + 1}/{epochs}")
@@ -109,34 +122,9 @@ for epoch in range(start_epoch, epochs):
         mlm_labels = sequences.clone()
         mlm_labels[~masked_tokens_mask] = -100
 
-        # teacher_attentions = None
-        # if knowledge_transfer:
-        #     with torch.no_grad():
-        #         _, teacher_attentions = teacher_model(input_ids=masked_token_seqs, attention_mask=padding_mask)
-        #         teacher_attentions = [h.float() for h in teacher_attentions]
-
         mlm_loss, transfer_loss, logits = model(input_ids=masked_token_seqs,
                                                 attention_mask=padding_mask,
                                                 masked_lm_labels=mlm_labels)
-
-        # seq_lens = padding_mask.sum(dim=-1)
-        # attention_loss = 0.
-        #
-        # batch_head_mask = masked_tokens_mask.unsqueeze(dim=1).expand(attentions[0].shape[:-1])
-        # seq_lens = seq_lens.view(-1, 1, 1).expand(attentions[0].shape[:-1])[batch_head_mask]
-        #
-        # for l in range(len(attentions)):
-        #     s_attn = attentions[l][batch_head_mask]
-        #     t_attn = teacher_attentions[l][batch_head_mask]
-        #
-        #     s_attn[s_attn == 0.] = 1.
-        #     t_attn[t_attn == 0.] = 1.
-        #
-        #     # attention_loss += ((s_attn - t_attn) ** 2).sum(dim=-1).mean()
-        #
-        #     mean_kl_divs = ((s_attn * torch.log(s_attn / t_attn)).sum(dim=1) / seq_lens)
-        #     attention_loss += mean_kl_divs.mean()
-        # transfer_loss = attention_loss / len(attentions)
 
         loss = mlm_loss + transfer_loss
 
@@ -146,7 +134,9 @@ for epoch in range(start_epoch, epochs):
         optimizer.zero_grad()
         with amp.scale_loss(loss, optimizer) as scaled_loss:
             scaled_loss.backward()
-        # loss.backward()
+
+        nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)
+
         optimizer.step()
 
         epoch_loss += loss.item() * num_batch_masked_tokens

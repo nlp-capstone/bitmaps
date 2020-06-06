@@ -20,16 +20,15 @@ import torch.nn.functional as F
 from transformers import BertPreTrainedModel
 
 from .bert import BertModel
-from .linear import BinaryLinear
 
 
-class BinaryBertForBinaryClassification(BertPreTrainedModel):
+class BertForBinaryClassification(BertPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.binary_classifier = BinaryLinear(config.hidden_size, 1)
+        self.binary_classifier = nn.Linear(config.hidden_size, 1)
 
         self.init_weights()
 
@@ -37,6 +36,7 @@ class BinaryBertForBinaryClassification(BertPreTrainedModel):
         self,
         input_ids=None,
         attention_mask=None,
+        token_type_ids=None,
         position_ids=None,
         inputs_embeds=None,
         labels=None
@@ -44,13 +44,14 @@ class BinaryBertForBinaryClassification(BertPreTrainedModel):
         outputs = self.bert(
             input_ids,
             attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds
         )
 
         pooled_output = outputs[1]
 
-        pooled_output = self.dropout(pooled_output)
+        # pooled_output = self.dropout(pooled_output)
         logits = self.binary_classifier(pooled_output)
 
         outputs = (logits,) + outputs[2:]

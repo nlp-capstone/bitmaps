@@ -18,27 +18,30 @@ class ShardedBertPretrainingDataset(Dataset):
         self.data = data
         self.tokenizer = tokenizer
 
+        self.random_seed = random_seed
         self.rng_state = None
-        if random_seed is None:
+
+    def pre_eval(self):
+        if self.random_seed is None:
             return
 
         with torch.random.fork_rng():
-            torch.random.manual_seed(random_seed)
+            torch.random.manual_seed(self.random_seed)
             self.rng_state = torch.random.get_rng_state()
 
     @staticmethod
-    def create(dir, tokenizer: PreTrainedTokenizer, max_seq_len, splits, num_processes=4, random_seed=None):
+    def create(dir, tokenizer: PreTrainedTokenizer, max_seq_len, splits, num_processes=4):
         cache_dir = os.path.join(dir, f"cache_{max_seq_len}")
         if not os.path.isdir(cache_dir):
             os.mkdir(cache_dir)
 
         datasets = []
-        for name, subset_size in splits:
+        for name, subset_size, seed in splits:
             data_path = os.path.join(cache_dir, f"data_{name}_{subset_size}.pt")
             if os.path.isfile(data_path):
                 data = torch.load(data_path)
                 assert data.shape[0] == subset_size and data.shape[1] == max_seq_len
-                datasets.append(ShardedBertPretrainingDataset(data, tokenizer, random_seed))
+                datasets.append(ShardedBertPretrainingDataset(data, tokenizer, seed))
 
         if len(datasets) == len(splits):
             return datasets[0] if len(datasets) == 1 else datasets
@@ -63,14 +66,16 @@ class ShardedBertPretrainingDataset(Dataset):
 
         data = torch.cat(sequences, dim=0)
 
-        set_seed = random_seed is not None
-        with torch.random.fork_rng(enabled=set_seed):
-            if set_seed:
-                torch.random.manual_seed(random_seed)
-            permutation = torch.randperm(len(data))
+        # set_seed = random_seed is not None
+        # with torch.random.fork_rng(enabled=set_seed):
+        #     if set_seed:
+        #         torch.random.manual_seed(random_seed)
+        #     permutation = torch.randperm(len(data))
+
+        permutation = torch.randperm(len(data))
 
         cur_subset_idx = 0
-        for name, subset_size in splits:
+        for name, subset_size, seed in splits:
             assert cur_subset_idx + subset_size <= len(data)
             subset_indices = permutation[cur_subset_idx:cur_subset_idx+subset_size].clone()
             subset_data = data[subset_indices].clone()
@@ -78,7 +83,7 @@ class ShardedBertPretrainingDataset(Dataset):
             torch.save(subset_indices, os.path.join(cache_dir, f"subset_indices_{name}_{subset_size}.pt"))
             torch.save(subset_data, os.path.join(cache_dir, f"data_{name}_{subset_size}.pt"))
 
-            datasets.append(ShardedBertPretrainingDataset(subset_data, tokenizer, random_seed))
+            datasets.append(ShardedBertPretrainingDataset(subset_data, tokenizer, seed))
             cur_subset_idx += subset_size
 
         return datasets[0] if len(datasets) == 1 else datasets

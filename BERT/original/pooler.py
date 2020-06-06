@@ -14,12 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import torch.nn as nn
-from .linear import BinaryLinear
 
 class BertPooler(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.dense = BinaryLinear(config.hidden_size, config.hidden_size)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
 
     def forward(self, hidden_states):
