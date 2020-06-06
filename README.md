@@ -1,13 +1,6 @@
-# BInarized Transformers for Making fAst PredictionS
-Transformer neural networks have revolutionized NLP in a wide variety of tasks including language modeling, machine translation, and named entity recognition. 
-Despite their usefulness, transformers are difficult to run on edge devices because of their hefty computing requirements. 
+# Bitmaps: Binarized transformers for making fast predictions
 
-Previously, binarization techniques, which involve reducing the precision of a model's parameters from float-32 to a single bit,
-have worked to great success in running convolutional neural networks on mobile phones. However, there do not currently such methods for transformers.
-We aim to binarize transformers in order to run them efficiently on edge devices. 
-
-## BERT
-### Masked Language Modeling
-
-### Binarization Strategies
-...
+In this paper we introduce a method for reducing the memory usage of BERT by representing 32-bit floating point weights as 1-bit quantities; a process called binarization. Our approach leads to a decrease
+in memory usage by a factor of up to 30, but at the cost of decreased performance. We evaluate our binarization approach for BERT on the masked language modeling pre-training objective as well as the downstream task of binary sentiment analysis on SST-2.
+This project was done as part of the Natural Language Processing Capstone (CSE481N) taught by Noah Smith in Spring 2020 at the University of Washington, Seattle. All code as well as a series of blog posts describing the progression of the project can be found at https://github.com/nlp-capstone.
+A presentation of our project can be found at https://vimeo.com/426452840.
